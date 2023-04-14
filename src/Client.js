@@ -10,9 +10,32 @@ const { WhatsWebURL, DefaultOptions, Events, WAState } = require('./util/Constan
 const { ExposeStore, LoadUtils } = require('./util/Injected');
 const ChatFactory = require('./factories/ChatFactory');
 const ContactFactory = require('./factories/ContactFactory');
-const { ClientInfo, Message, MessageMedia, Contact, Location, GroupNotification, Label, Call, Buttons, List, Reaction, Chat } = require('./structures');
+const { ClientInfo, Message, MessageMedia, Contact, Location, GroupNotification, Label, Call, Buttons, List, Reaction } = require('./structures');
 const LegacySessionAuth = require('./authStrategies/LegacySessionAuth');
 const NoAuth = require('./authStrategies/NoAuth');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const platform = os.platform();
+
+let executablePath = '';
+
+if (platform === 'win32') {
+    executablePath = path.join('/tmp', 'chrome-win', 'chrome');
+} else if (platform === 'darwin') {
+    executablePath = path.join('/tmp', 'chrome-mac', 'Chromium.app', 'Contents', 'MacOS', 'Chromium');
+} else if (platform === 'linux') {
+    executablePath = 'linux/chrome-linux/chrome';
+}
+
+console.log(`Executable path for Chromium: ${executablePath}`);
+
+
+// const executablePath = path.join('/tmp', 'chrome-mac', 'Chromium.app', 'Contents', 'MacOS', 'Chromium');
+
+
+console.log(executablePath);
 
 /**
  * Starting point for interacting with the WhatsApp Web API
@@ -45,8 +68,6 @@ const NoAuth = require('./authStrategies/NoAuth');
  * @fires Client#group_update
  * @fires Client#disconnected
  * @fires Client#change_state
- * @fires Client#contact_changed
- * @fires Client#group_admin_changed
  */
 class Client extends EventEmitter {
     constructor(options = {}) {
@@ -97,9 +118,10 @@ class Client extends EventEmitter {
             const browserArgs = [...(puppeteerOpts.args || [])];
             if(!browserArgs.find(arg => arg.includes('--user-agent'))) {
                 browserArgs.push(`--user-agent=${this.options.userAgent}`);
+                //browserArgs.push(`--ignore-certificate-errors`);
             }
 
-            browser = await puppeteer.launch({...puppeteerOpts, args: browserArgs});
+            browser = await puppeteer.launch({...puppeteerOpts, args: browserArgs, executablePath});
             page = (await browser.pages())[0];
         }
       
@@ -319,13 +341,6 @@ class Client extends EventEmitter {
                      * @param {GroupNotification} notification GroupNotification with more information about the action
                      */
                     this.emit(Events.GROUP_LEAVE, notification);
-                } else if (msg.subtype === 'promote' || msg.subtype === 'demote') {
-                    /**
-                     * Emitted when a current user is promoted to an admin or demoted to a regular user.
-                     * @event Client#group_admin_changed
-                     * @param {GroupNotification} notification GroupNotification with more information about the action
-                     */
-                    this.emit(Events.GROUP_ADMIN_CHANGED, notification);
                 } else {
                     /**
                      * Emitted when group settings are updated, such as subject, description or picture.
@@ -385,36 +400,6 @@ class Client extends EventEmitter {
                 last_message = msg;
             }
 
-            /**
-             * The event notification that is received when one of
-             * the group participants changes thier phone number.
-             */
-            const isParticipant = msg.type === 'gp2' && msg.subtype === 'modify';
-
-            /**
-             * The event notification that is received when one of
-             * the contacts changes thier phone number.
-             */
-            const isContact = msg.type === 'notification_template' && msg.subtype === 'change_number';
-
-            if (isParticipant || isContact) {
-                /** {@link GroupNotification} object does not provide enough information about this event, so a {@link Message} object is used. */
-                const message = new Message(this, msg);
-
-                const newId = isParticipant ? msg.recipients[0] : msg.to;
-                const oldId = isParticipant ? msg.author : msg.templateParams.find(id => id !== newId);
-
-                /**
-                 * Emitted when a contact or a group participant changes their phone number.
-                 * @event Client#contact_changed
-                 * @param {Message} message Message with more information about the event.
-                 * @param {String} oldId The user's id (an old one) who changed their phone number
-                 * and who triggered the notification.
-                 * @param {String} newId The user's new id after the change.
-                 * @param {Boolean} isContact Indicates if a contact or a group participant changed their phone number.
-                 */
-                this.emit(Events.CONTACT_CHANGED, message, oldId, newId, isContact);
-            }
         });
 
         await page.exposeFunction('onRemoveMessageEvent', (msg) => {
@@ -444,15 +429,6 @@ class Client extends EventEmitter {
              */
             this.emit(Events.MESSAGE_ACK, message, ack);
 
-        });
-
-        await page.exposeFunction('onChatUnreadCountEvent', async (data) =>{
-            const chat = await this.getChatById(data.id);
-            
-            /**
-             * Emitted when the chat unread count changes
-             */
-            this.emit(Events.UNREAD_COUNT, chat);
         });
 
         await page.exposeFunction('onMessageMediaUploadedEvent', (msg) => {
@@ -555,26 +531,6 @@ class Client extends EventEmitter {
             }
         });
 
-        await page.exposeFunction('onRemoveChatEvent', (chat) => {
-            /**
-             * Emitted when a chat is removed
-             * @event Client#chat_removed
-             * @param {Chat} chat
-             */
-            this.emit(Events.CHAT_REMOVED, new Chat(this, chat));
-        });
-        
-        await page.exposeFunction('onArchiveChatEvent', (chat, currState, prevState) => {
-            /**
-             * Emitted when a chat is archived/unarchived
-             * @event Client#chat_archived
-             * @param {Chat} chat
-             * @param {boolean} currState
-             * @param {boolean} prevState
-             */
-            this.emit(Events.CHAT_ARCHIVED, new Chat(this, chat), currState, prevState);
-        });
-
         await page.evaluate(() => {
             window.Store.Msg.on('change', (msg) => { window.onChangeMessageEvent(window.WWebJS.getMessageModel(msg)); });
             window.Store.Msg.on('change:type', (msg) => { window.onChangeMessageTypeEvent(window.WWebJS.getMessageModel(msg)); });
@@ -584,8 +540,6 @@ class Client extends EventEmitter {
             window.Store.AppState.on('change:state', (_AppState, state) => { window.onAppStateChangedEvent(state); });
             window.Store.Conn.on('change:battery', (state) => { window.onBatteryStateChangedEvent(state); });
             window.Store.Call.on('add', (call) => { window.onIncomingCall(call); });
-            window.Store.Chat.on('remove', async (chat) => { window.onRemoveChatEvent(await window.WWebJS.getChatModel(chat)); });
-            window.Store.Chat.on('change:archive', async (chat, currState, prevState) => { window.onArchiveChatEvent(await window.WWebJS.getChatModel(chat), currState, prevState); });
             window.Store.Msg.on('add', (msg) => { 
                 if (msg.isNewMsg) {
                     if(msg.type === 'ciphertext') {
@@ -596,8 +550,7 @@ class Client extends EventEmitter {
                     }
                 }
             });
-            window.Store.Chat.on('change:unreadCount', (chat) => {window.onChatUnreadCountEvent(chat);});
-
+            
             {
                 const module = window.Store.createOrUpdateReactionsModule;
                 const ogMethod = module.createOrUpdateReactions;
@@ -1248,31 +1201,6 @@ class Client extends EventEmitter {
         });
 
         return blockedContacts.map(contact => ContactFactory.create(this.client, contact));
-    }
-
-    /**
-     * Sets the current user's profile picture.
-     * @param {MessageMedia} media
-     * @returns {Promise<boolean>} Returns true if the picture was properly updated.
-     */
-    async setProfilePicture(media) {
-        const success = await this.pupPage.evaluate((chatid, media) => {
-            return window.WWebJS.setPicture(chatid, media);
-        }, this.info.wid._serialized, media);
-
-        return success;
-    }
-
-    /**
-     * Deletes the current user's profile picture.
-     * @returns {Promise<boolean>} Returns true if the picture was properly deleted.
-     */
-    async deleteProfilePicture() {
-        const success = await this.pupPage.evaluate((chatid) => {
-            return window.WWebJS.deletePicture(chatid);
-        }, this.info.wid._serialized);
-
-        return success;
     }
 }
 
