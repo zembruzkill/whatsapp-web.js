@@ -31,11 +31,7 @@ if (platform === 'win32') {
 
 console.log(`Executable path for Chromium: ${executablePath}`);
 
-
 // const executablePath = path.join('/tmp', 'chrome-mac', 'Chromium.app', 'Contents', 'MacOS', 'Chromium');
-
-
-console.log(executablePath);
 
 /**
  * Starting point for interacting with the WhatsApp Web API
